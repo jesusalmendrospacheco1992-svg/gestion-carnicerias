@@ -138,7 +138,7 @@ BASE_LAYOUT = """
     {% if current_user.is_authenticated %}
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container-fluid">
-            <a class="navbar-brand" href="/">🥩 Distribución Carnicerías</a>
+            <a class="navbar-brand" href="/">🥩 Productos Almendros</a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
             </button>
@@ -245,6 +245,11 @@ def index():
     html = BASE_LAYOUT.replace("{% block content %}{% endblock %}", """
     <div class="row">
         <div class="col-md-12">
+            <div class="card p-3 mb-4 bg-white shadow-sm border-0">
+                <h5 class="text-secondary mb-1">Emitido por:</h5>
+                <h4 class="fw-bold">Productos Almendros</h4>
+                <p class="mb-0 text-muted">NIF: 03808927N | Calle Los Ángeles, 37, 45860 Toledo</p>
+            </div>
             <h2 class="mb-4">📄 Emitir Factura / Pedido</h2>
             <form action="/procesar_factura" method="POST" class="card p-4 shadow-sm">
                 <div class="row mb-3">
@@ -323,7 +328,7 @@ def stock():
         v = res_v[0] if res_v and res_v[0] else 0
         actual = ini + comp - v
         estado = "Reponer" if actual <= min_s else "OK"
-        datos.append((p_id, cod, desc, f"{precio:.2f}€", f"{int(iva*100)}%", ini, comp, v, actual, estado))
+        datos.append((p_id, cod, desc, precio, iva, ini, comp, v, actual, estado))
     conn.close()
 
     html = BASE_LAYOUT.replace("{% block content %}{% endblock %}", """
@@ -331,22 +336,34 @@ def stock():
         <h2>📦 Control de Almacén y Productos</h2>
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modalCrearProducto">➕ Nuevo Producto</button>
     </div>
-    <table class="table table-striped table-bordered">
+    <div class="table-responsive">
+    <table class="table table-striped table-bordered align-middle">
         <thead class="table-dark">
             <tr><th>Código</th><th>Descripción</th><th>Precio</th><th>IVA</th><th>Stock Ini.</th><th>Compras</th><th>Ventas</th><th>Disponible</th><th>Estado</th><th>Acciones</th></tr>
         </thead>
         <tbody>
             {% for d in datos %}
             <tr>
-                <td>{{ d[1] }}</td><td>{{ d[2] }}</td><td>{{ d[3] }}</td><td>{{ d[4] }}</td><td>{{ d[5] }}</td><td>{{ d[6] }}</td><td>{{ d[7] }}</td><td><strong>{{ d[8] }}</strong></td>
-                <td><span class="badge {{ 'bg-danger' if d[9]=='Reponer' else 'bg-success' }}">{{ d[9] }}</span></td>
-                <td>
-                    <a href="/eliminar_producto/{{ d[0] }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar producto?')">🗑️</a>
-                </td>
+                <form action="/actualizar_producto/{{ d[0] }}" method="POST">
+                    <td>{{ d[1] }}</td>
+                    <td>{{ d[2] }}</td>
+                    <td><input type="number" step="0.01" name="precio" value="{{ d[3] }}" class="form-control form-control-sm" style="width: 80px;" required></td>
+                    <td>{{ "%.0f"|format(d[4]*100) }}%</td>
+                    <td><input type="number" name="stock_inicial" value="{{ d[5] }}" class="form-control form-control-sm" style="width: 70px;" required></td>
+                    <td><input type="number" name="compras" value="{{ d[6] }}" class="form-control form-control-sm" style="width: 70px;" required></td>
+                    <td>{{ d[7] }}</td>
+                    <td><strong>{{ d[8] }}</strong></td>
+                    <td><span class="badge {{ 'bg-danger' if d[9]=='Reponer' else 'bg-success' }}">{{ d[9] }}</span></td>
+                    <td>
+                        <button type="submit" class="btn btn-success btn-sm" title="Guardar cambios">💾</button>
+                        <a href="/eliminar_producto/{{ d[0] }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar producto?')" title="Eliminar">🗑️</a>
+                    </td>
+                </form>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+    </div>
 
     <div class="modal fade" id="modalCrearProducto" tabindex="-1">
       <div class="modal-dialog">
@@ -378,11 +395,28 @@ def guardar_producto():
             INSERT INTO productos (codigo, descripcion, precio, iva, stock_inicial, compras, stock_minimo)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (request.form["codigo"], request.form["descripcion"], float(request.form["precio"]), float(request.form["iva"]),
-              int(request.form["stock_inicial"]), int(request.form["compras"]), int(request.form["stock_minimo"])))
+              int(request.form["stock_inicial"]), int(request.form["compras"]), 10))
         conn.commit()
         flash("Producto guardado correctamente", "success")
     except Exception as e:
         flash(f"Error al guardar producto: {e}", "danger")
+    finally:
+        conn.close()
+    return redirect(url_for("stock"))
+
+@app.route("/actualizar_producto/<int:id>", methods=["POST"])
+@login_required
+def actualizar_producto(id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            UPDATE productos SET precio = %s, stock_inicial = %s, compras = %s WHERE id = %s
+        """, (float(request.form["precio"]), int(request.form["stock_inicial"]), int(request.form["compras"]), id))
+        conn.commit()
+        flash("Producto actualizado correctamente", "success")
+    except Exception as e:
+        flash(f"Error al actualizar producto: {e}", "danger")
     finally:
         conn.close()
     return redirect(url_for("stock"))
@@ -413,7 +447,8 @@ def clientes():
         <h2>👥 Clientes (Carnicerías)</h2>
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modalCrearCliente">➕ Nuevo Cliente</button>
     </div>
-    <table class="table table-striped table-bordered">
+    <div class="table-responsive">
+    <table class="table table-striped table-bordered align-middle">
         <thead class="table-dark">
             <tr><th>Nombre</th><th>NIF</th><th>Tipo</th><th>Recargo Equiv.</th><th>Dirección</th><th>Acciones</th></tr>
         </thead>
@@ -421,11 +456,43 @@ def clientes():
             {% for r in rows %}
             <tr>
                 <td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td><td>{{ r[4] }}</td><td>{{ r[5] }}</td>
-                <td><a href="/eliminar_cliente/{{ r[0] }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar cliente?')">🗑️</a></td>
+                <td>
+                    <button class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#modalEditarCliente{{ r[0] }}" title="Editar">✏️</button>
+                    <a href="/eliminar_cliente/{{ r[0] }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar cliente?')" title="Eliminar">🗑️</a>
+                </td>
             </tr>
+
+            <!-- Modal Editar Cliente -->
+            <div class="modal fade" id="modalEditarCliente{{ r[0] }}" tabindex="-1">
+              <div class="modal-dialog">
+                <form action="/actualizar_cliente/{{ r[0] }}" method="POST" class="modal-content">
+                  <div class="modal-header"><h5 class="modal-title">Editar Cliente: {{ r[1] }}</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                  <div class="modal-body">
+                    <div class="mb-2"><label>Nombre</label><input type="text" name="nombre" value="{{ r[1] }}" class="form-control" required></div>
+                    <div class="mb-2"><label>NIF / CIF</label><input type="text" name="nif" value="{{ r[2] }}" class="form-control" required></div>
+                    <div class="mb-2"><label>Tipo de Cliente</label>
+                        <select name="tipo_cliente" class="form-select">
+                            <option {% if r[3]=='Estándar' %}selected{% endif %}>Estándar</option>
+                            <option {% if r[3]=='VIP' %}selected{% endif %}>VIP</option>
+                            <option {% if r[3]=='Mayorista' %}selected{% endif %}>Mayorista</option>
+                        </select>
+                    </div>
+                    <div class="mb-2"><label>Aplica Recargo Equivalencia</label>
+                        <select name="recargo" class="form-select">
+                            <option value="SÍ" {% if r[4]=='SÍ' %}selected{% endif %}>SÍ</option>
+                            <option value="NO" {% if r[4]=='NO' %}selected{% endif %}>NO</option>
+                        </select>
+                    </div>
+                    <div class="mb-2"><label>Dirección</label><input type="text" name="direccion" value="{{ r[5] }}" class="form-control" required></div>
+                  </div>
+                  <div class="modal-footer"><button type="submit" class="btn btn-primary">Actualizar</button></div>
+                </form>
+              </div>
+            </div>
             {% endfor %}
         </tbody>
     </table>
+    </div>
 
     <div class="modal fade" id="modalCrearCliente" tabindex="-1">
       <div class="modal-dialog">
@@ -471,6 +538,23 @@ def guardar_cliente():
         conn.close()
     return redirect(url_for("clientes"))
 
+@app.route("/actualizar_cliente/<int:id>", methods=["POST"])
+@login_required
+def actualizar_cliente(id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            UPDATE clientes SET nombre = %s, nif = %s, tipo_cliente = %s, recargo = %s, direccion = %s WHERE id = %s
+        """, (request.form["nombre"], request.form["nif"], request.form["tipo_cliente"], request.form["recargo"], request.form["direccion"], id))
+        conn.commit()
+        flash("Cliente actualizado correctamente", "success")
+    except Exception as e:
+        flash(f"Error al actualizar cliente: {e}", "danger")
+    finally:
+        conn.close()
+    return redirect(url_for("clientes"))
+
 @app.route("/eliminar_cliente/<int:id>")
 @login_required
 def eliminar_cliente(id):
@@ -494,7 +578,8 @@ def historico():
 
     html = BASE_LAYOUT.replace("{% block content %}{% endblock %}", """
     <h2>📊 Histórico de Facturas</h2>
-    <table class="table table-striped table-bordered mt-3">
+    <div class="table-responsive">
+    <table class="table table-striped table-bordered mt-3 align-middle">
         <thead class="table-dark">
             <tr><th>Nº Factura</th><th>Fecha</th><th>Cliente</th><th>Base Imp.</th><th>IVA</th><th>Recargo</th><th>Total</th><th>Acciones</th></tr>
         </thead>
@@ -503,14 +588,34 @@ def historico():
             <tr>
                 <td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td><td>{{ "%.2f"|format(r[6]) }}€</td><td>{{ "%.2f"|format(r[7]) }}€</td><td>{{ "%.2f"|format(r[8]) }}€</td><td><strong>{{ "%.2f"|format(r[9]) }}€</strong></td>
                 <td>
-                    <a href="/descargar_pdf/{{ r[1] }}" class="btn btn-danger btn-sm">📄 Descargar PDF</a>
+                    <a href="/descargar_pdf/{{ r[1] }}" class="btn btn-danger btn-sm" title="Descargar PDF">📄 PDF</a>
+                    <a href="/eliminar_factura/{{ r[1] }}" class="btn btn-outline-danger btn-sm" onclick="return confirm('¿Seguro que deseas eliminar esta factura y sus ventas asociadas?')" title="Eliminar factura y ventas">🗑️</a>
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+    </div>
     """)
     return render_template_string(html, rows=rows)
+
+@app.route("/eliminar_factura/<num_factura>")
+@login_required
+def eliminar_factura(num_factura):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Borrar de facturas, ventas_lineas y ventas para mantener sincronización total
+        cursor.execute("DELETE FROM facturas WHERE num_factura = %s", (num_factura,))
+        cursor.execute("DELETE FROM ventas_lineas WHERE num_factura = %s", (num_factura,))
+        cursor.execute("DELETE FROM ventas WHERE factura = %s", (num_factura,))
+        conn.commit()
+        flash(f"Factura {num_factura} y sus ventas asociadas eliminadas correctamente", "warning")
+    except Exception as e:
+        flash(f"Error al eliminar la factura: {e}", "danger")
+    finally:
+        conn.close()
+    return redirect(url_for("historico"))
 
 @app.route("/descargar_pdf/<num_factura>")
 @login_required
@@ -536,6 +641,12 @@ def descargar_pdf(num_factura):
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     styles = getSampleStyleSheet()
     story = []
+
+    # Cabecera Emisor
+    story.append(Paragraph("<b>PRODUCTOS ALMENDROS</b>", styles['Heading1']))
+    story.append(Paragraph("NIF: 03808927N", styles['Normal']))
+    story.append(Paragraph("Calle Los Ángeles, 37, 45860 Toledo", styles['Normal']))
+    story.append(Spacer(1, 10))
 
     story.append(Paragraph(f"<b>FACTURA: {fac[0]}</b>", styles['Title']))
     story.append(Spacer(1, 10))
@@ -581,18 +692,36 @@ def ventas():
 
     html = BASE_LAYOUT.replace("{% block content %}{% endblock %}", """
     <h2>📋 Detalle de Ventas</h2>
-    <table class="table table-striped table-bordered mt-3">
+    <div class="table-responsive">
+    <table class="table table-striped table-bordered mt-3 align-middle">
         <thead class="table-dark">
-            <tr><th>Fecha</th><th>Factura</th><th>Cliente</th><th>Producto</th><th>Cant.</th><th>Precio Unit.</th><th>Subtotal</th><th>Total</th></tr>
+            <tr><th>Fecha</th><th>Factura</th><th>Cliente</th><th>Producto</th><th>Cant.</th><th>Precio Unit.</th><th>Subtotal</th><th>Total</th><th>Acciones</th></tr>
         </thead>
         <tbody>
             {% for r in rows %}
-            <tr><td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td><td>{{ r[4] }}</td><td>{{ r[5] }}</td><td>{{ "%.2f"|format(r[6]) }}€</td><td>{{ "%.2f"|format(r[7]) }}€</td><td><strong>{{ "%.2f"|format(r[8]) }}€</strong></td></tr>
+            <tr>
+                <td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td><td>{{ r[4] }}</td><td>{{ r[5] }}</td><td>{{ "%.2f"|format(r[6]) }}€</td><td>{{ "%.2f"|format(r[7]) }}€</td><td><strong>{{ "%.2f"|format(r[8]) }}€</strong></td>
+                <td>
+                    <a href="/eliminar_venta/{{ r[0] }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar este registro de venta?')" title="Eliminar">🗑️</a>
+                </td>
+            </tr>
             {% endfor %}
         </tbody>
     </table>
+    </div>
     """)
     return render_template_string(html, rows=rows)
+
+@app.route("/eliminar_venta/<int:id>")
+@login_required
+def eliminar_venta(id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM ventas WHERE id = %s", (id,))
+    conn.commit()
+    conn.close()
+    flash("Registro de venta eliminado", "warning")
+    return redirect(url_for("ventas"))
 
 @app.route("/gastos")
 @login_required
@@ -606,7 +735,7 @@ def gastos():
     html = BASE_LAYOUT.replace("{% block content %}{% endblock %}", """
     <h2>💸 Gastos de la Empresa</h2>
     <form action="/guardar_gasto" method="POST" class="card p-3 mb-4 shadow-sm">
-        <div class="row">
+        <div class="row g-2">
             <div class="col-md-3"><input type="date" name="fecha" class="form-control" required></div>
             <div class="col-md-3"><input type="text" name="concepto" class="form-control" placeholder="Concepto" required></div>
             <div class="col-md-3">
@@ -618,14 +747,46 @@ def gastos():
             <div class="col-md-1"><button type="submit" class="btn btn-primary w-100">Guardar</button></div>
         </div>
     </form>
-    <table class="table table-striped table-bordered">
-        <thead class="table-dark"><tr><th>Fecha</th><th>Concepto</th><th>Categoría</th><th>Importe</th></tr></thead>
+    <div class="table-responsive">
+    <table class="table table-striped table-bordered align-middle">
+        <thead class="table-dark"><tr><th>Fecha</th><th>Concepto</th><th>Categoría</th><th>Importe</th><th>Acciones</th></tr></thead>
         <tbody>
             {% for r in rows %}
-            <tr><td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td><td>{{ "%.2f"|format(r[4]) }}€</td></tr>
+            <tr>
+                <td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td><td>{{ "%.2f"|format(r[4]) }}€</td>
+                <td>
+                    <button class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#modalEditarGasto{{ r[0] }}" title="Editar">✏️</button>
+                    <a href="/eliminar_gasto/{{ r[0] }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar gasto?')" title="Eliminar">🗑️</a>
+                </td>
+            </tr>
+
+            <!-- Modal Editar Gasto -->
+            <div class="modal fade" id="modalEditarGasto{{ r[0] }}" tabindex="-1">
+              <div class="modal-dialog">
+                <form action="/actualizar_gasto/{{ r[0] }}" method="POST" class="modal-content">
+                  <div class="modal-header"><h5 class="modal-title">Editar Gasto</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+                  <div class="modal-body">
+                    <div class="mb-2"><label>Fecha</label><input type="date" name="fecha" value="{{ r[1] }}" class="form-control" required></div>
+                    <div class="mb-2"><label>Concepto</label><input type="text" name="concepto" value="{{ r[2] }}" class="form-control" required></div>
+                    <div class="mb-2"><label>Categoría</label>
+                        <select name="categoria" class="form-select">
+                            <option {% if r[3]=='Gasolina / Transporte' %}selected{% endif %}>Gasolina / Transporte</option>
+                            <option {% if r[3]=='Alquileres' %}selected{% endif %}>Alquileres</option>
+                            <option {% if r[3]=='Mantenimiento' %}selected{% endif %}>Mantenimiento</option>
+                            <option {% if r[3]=='Producto / Mercancía' %}selected{% endif %}>Producto / Mercancía</option>
+                            <option {% if r[3]=='Otros' %}selected{% endif %}>Otros</option>
+                        </select>
+                    </div>
+                    <div class="mb-2"><label>Importe (€)</label><input type="number" step="0.01" name="importe" value="{{ r[4] }}" class="form-control" required></div>
+                  </div>
+                  <div class="modal-footer"><button type="submit" class="btn btn-primary">Actualizar</button></div>
+                </form>
+              </div>
+            </div>
             {% endfor %}
         </tbody>
     </table>
+    </div>
     """)
     return render_template_string(html, rows=rows)
 
@@ -639,6 +800,29 @@ def guardar_gasto():
     conn.commit()
     conn.close()
     flash("Gasto guardado", "success")
+    return redirect(url_for("gastos"))
+
+@app.route("/actualizar_gasto/<int:id>", methods=["POST"])
+@login_required
+def actualizar_gasto(id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE gastos SET fecha = %s, concepto = %s, categoria = %s, importe = %s WHERE id = %s",
+                   (request.form["fecha"], request.form["concepto"], request.form["categoria"], float(request.form["importe"]), id))
+    conn.commit()
+    conn.close()
+    flash("Gasto actualizado", "success")
+    return redirect(url_for("gastos"))
+
+@app.route("/eliminar_gasto/<int:id>")
+@login_required
+def eliminar_gasto(id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM gastos WHERE id = %s", (id,))
+    conn.commit()
+    conn.close()
+    flash("Gasto eliminado", "warning")
     return redirect(url_for("gastos"))
 
 @app.route("/balance")
