@@ -1,5 +1,5 @@
 flask
 flask-login
-psycopyg2-binary
+psycopg2-binary
 reportlab
 werkzeug
