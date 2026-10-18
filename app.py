@@ -92,7 +92,8 @@ def init_db():
             num_factura TEXT NOT NULL,
             producto TEXT NOT NULL,
             cantidad INTEGER NOT NULL,
-            precio REAL NOT NULL
+            precio REAL NOT NULL,
+            iva REAL DEFAULT 0.10
         );
         CREATE TABLE IF NOT EXISTS ventas (
             id SERIAL PRIMARY KEY,
@@ -117,7 +118,7 @@ def init_db():
         );
     """)
 
-    # Migración de seguridad por si la tabla clientes ya existía sin la columna categoria_negocio
+    # Migración de seguridad por si las tablas ya existían
     cursor.execute("""
         DO $$ 
         BEGIN 
@@ -126,6 +127,9 @@ def init_db():
             END IF;
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='ventas' and column_name='iva_linea') THEN
                 ALTER TABLE ventas ADD COLUMN iva_linea REAL DEFAULT 0.0;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='ventas_lineas' and column_name='iva') THEN
+                ALTER TABLE ventas_lineas ADD COLUMN iva REAL DEFAULT 0.10;
             END IF;
         END $$;
     """)
@@ -251,7 +255,7 @@ def index():
     cursor.execute("SELECT nombre, categoria_negocio FROM clientes ORDER BY nombre ASC")
     clientes = cursor.fetchall()
     
-    cursor.execute("SELECT codigo, descripcion, precio FROM productos ORDER BY descripcion ASC")
+    cursor.execute("SELECT codigo, descripcion, precio, iva FROM productos ORDER BY descripcion ASC")
     productos = cursor.fetchall()
     
     cursor.execute("SELECT COUNT(*) FROM facturas")
@@ -288,22 +292,34 @@ def index():
                 <h5 class="mb-3">Añadir Líneas de Venta</h5>
                 <div id="lineas-container">
                     <div class="row mb-2 linea-row align-items-center">
-                        <div class="col-md-5">
+                        <div class="col-md-4">
                             <input type="text" class="form-control form-control-sm mb-1 buscador-prod" placeholder="🔍 Buscar por código o nombre..." onkeyup="filtrarProductos(this)">
-                            <select name="producto[]" class="form-select prod-select" onchange="actualizarPrecio(this)" required>
+                            <select name="producto[]" class="form-select prod-select" onchange="actualizarDatosProducto(this)" required>
                                 <option value="">Seleccione producto...</option>
                                 {% for p in productos %}
-                                <option value="{{ p[1] }}" data-codigo="{{ p[0] }}" data-precio="{{ p[2] }}">{{ p[0] }} - {{ p[1] }} ({{ p[2] }}€)</option>
+                                <option value="{{ p[1] }}" data-codigo="{{ p[0] }}" data-precio="{{ p[2] }}" data-iva="{{ p[3] }}">{{ p[0] }} - {{ p[1] }} ({{ p[2] }}€)</option>
                                 {% endfor %}
                             </select>
                         </div>
-                        <div class="col-md-3">
-                            <input type="number" name="cantidad[]" class="form-control" placeholder="Cantidad" value="1" min="1" required>
+                        <div class="col-md-2">
+                            <label class="form-label small text-muted mb-0">Cantidad</label>
+                            <input type="number" name="cantidad[]" class="form-control" value="1" min="1" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small text-muted mb-0">Precio Unit. (€)</label>
+                            <input type="number" step="0.01" name="precio_unit[]" class="form-control precio-input" required>
                         </div>
                         <div class="col-md-3">
-                            <input type="number" step="0.01" name="precio_unit[]" class="form-control precio-input" placeholder="Precio Unit. (€)" required>
+                            <label class="form-label small text-muted mb-0">IVA (%)</label>
+                            <select name="iva_linea[]" class="form-select iva-select" required>
+                                <option value="0.10">10% (Reducido)</option>
+                                <option value="0.21">21% (General)</option>
+                                <option value="0.04">4% (Superreducido)</option>
+                                <option value="0.00">0% (Exento)</option>
+                            </select>
                         </div>
-                        <div class="col-md-1">
+                        <div class="col-md-1 text-center">
+                            <label class="form-label small text-muted mb-0">&nbsp;</label><br>
                             <button type="button" class="btn btn-outline-danger btn-sm" onclick="eliminarLinea(this)">🗑️</button>
                         </div>
                     </div>
@@ -342,11 +358,18 @@ def index():
         }
     }
 
-    function actualizarPrecio(select) {
-        let precio = select.options[select.selectedIndex].getAttribute('data-precio');
+    function actualizarDatosProducto(select) {
+        let option = select.options[select.selectedIndex];
+        let precio = option.getAttribute('data-precio');
+        let iva = option.getAttribute('data-iva');
         let row = select.closest('.linea-row');
+        
         if (precio) {
             row.querySelector('.precio-input').value = precio;
+        }
+        if (iva !== null) {
+            let ivaSelect = row.querySelector('.iva-select');
+            ivaSelect.value = parseFloat(iva).toFixed(2);
         }
     }
 
@@ -712,7 +735,7 @@ def descargar_pdf(num_factura):
         conn.close()
         return "Factura no encontrada", 404
 
-    cursor.execute("SELECT producto, cantidad, precio FROM ventas_lineas WHERE num_factura = %s", (num_factura,))
+    cursor.execute("SELECT producto, cantidad, precio, iva FROM ventas_lineas WHERE num_factura = %s", (num_factura,))
     lineas = cursor.fetchall()
     
     cursor.execute("SELECT nif, direccion FROM clientes WHERE nombre = %s", (fac[2],))
@@ -739,12 +762,13 @@ def descargar_pdf(num_factura):
     story.append(Paragraph(f"<b>Dirección:</b> {dir_cli}", styles['Normal']))
     story.append(Spacer(1, 15))
 
-    table_data = [["Producto", "Cantidad", "Precio Unitario", "Subtotal"]]
+    table_data = [["Producto", "Cant.", "Precio Unit.", "IVA", "Subtotal"]]
     for l in lineas:
         sub = l[1] * l[2]
-        table_data.append([l[0], str(l[1]), f"{l[2]:.2f} €", f"{sub:.2f} €"])
+        iva_pct = f"{int(l[3]*100)}%" if l[3] is not None else "10%"
+        table_data.append([l[0], str(l[1]), f"{l[2]:.2f} €", iva_pct, f"{sub:.2f} €"])
 
-    t = Table(table_data, colWidths=[200, 80, 100, 100])
+    t = Table(table_data, colWidths=[180, 50, 90, 80, 100])
     t.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -949,6 +973,7 @@ def procesar_factura():
     productos = request.form.getlist("producto[]")
     cantidades = request.form.getlist("cantidad[]")
     precios = request.form.getlist("precio_unit[]")
+    ivas = request.form.getlist("iva_linea[]")
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -957,42 +982,48 @@ def procesar_factura():
     res_cli = cursor.fetchone()
     _, tipo_cliente, aplica_recargo, _ = res_cli if res_cli else ("", "Estándar", "NO", "")
 
-    base_10, base_21 = 0, 0
+    base_imponible_total = 0
+    iva_total = 0
+    recargo_total = 0
     lineas_temp = []
 
-    for prod, cant_s, prec_s in zip(productos, cantidades, precios):
+    for prod, cant_s, prec_s, iva_s in zip(productos, cantidades, precios, ivas):
         if not prod: continue
         cant = int(cant_s)
         precio = float(prec_s)
-
-        cursor.execute("SELECT iva FROM productos WHERE descripcion = %s", (prod,))
-        p_data = cursor.fetchone()
-        iva = p_data[0] if p_data else 0.21
+        iva = float(iva_s)
 
         sub = cant * precio
-        lineas_temp.append((prod, cant, precio, iva, sub))
+        iva_linea_val = sub * iva
+        
+        # Recargo de equivalencia estándar (1.4% para IVA 10%, 5.2% para IVA 21%)
+        rec_linea = 0
+        if aplica_recargo == "SÍ":
+            if abs(iva - 0.10) < 0.01:
+                rec_linea = sub * 0.014
+            elif abs(iva - 0.21) < 0.01:
+                rec_linea = sub * 0.052
 
-        if iva == 0.10: base_10 += sub
-        elif iva == 0.21: base_21 += sub
+        base_imponible_total += sub
+        iva_total += iva_linea_val
+        recargo_total += rec_linea
 
-    iva_total = (base_10 * 0.10) + (base_21 * 0.21)
-    recargo_total = ((base_10 * 0.014) + (base_21 * 0.052)) if aplica_recargo == "SÍ" else 0
-    base_imponible = base_10 + base_21
-    total_factura = base_imponible + iva_total + recargo_total
+        lineas_temp.append((prod, cant, precio, iva, sub, iva_linea_val, rec_linea))
+
+    total_factura = base_imponible_total + iva_total + recargo_total
     fecha_hoy = datetime.date.today().strftime("%Y-%m-%d")
 
     try:
         cursor.execute("""
             INSERT INTO facturas (num_factura, fecha, cliente, tipo_cliente, recargo, base_imponible, iva_total, recargo_total, total_factura)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (num_fac, fecha_hoy, cliente, tipo_cliente, aplica_recargo, base_imponible, iva_total, recargo_total, total_factura))
+        """, (num_fac, fecha_hoy, cliente, tipo_cliente, aplica_recargo, base_imponible_total, iva_total, recargo_total, total_factura))
 
         for item in lineas_temp:
-            desc, cant, precio, iva, sub = item
-            cursor.execute("INSERT INTO ventas_lineas (num_factura, producto, cantidad, precio) VALUES (%s, %s, %s, %s)", (num_fac, desc, cant, precio))
+            desc, cant, precio, iva, sub, iva_linea_val, rec_linea = item
+            cursor.execute("INSERT INTO ventas_lineas (num_factura, producto, cantidad, precio, iva) VALUES (%s, %s, %s, %s, %s)", 
+                           (num_fac, desc, cant, precio, iva))
             
-            iva_linea_val = sub * iva
-            rec_linea = (sub * 0.014) if iva == 0.10 and aplica_recargo == "SÍ" else ((sub * 0.052) if iva == 0.21 and aplica_recargo == "SÍ" else 0)
             tot_linea = sub + iva_linea_val + rec_linea
             
             cursor.execute("""
@@ -1001,7 +1032,7 @@ def procesar_factura():
             """, (fecha_hoy, num_fac, cliente, tipo_cliente, desc, cant, precio, sub, iva_linea_val, rec_linea, tot_linea))
 
         conn.commit()
-        flash("Factura emitida correctamente y stock actualizado", "success")
+        flash("Factura emitida correctamente, IVA contabilizado y stock actualizado", "success")
     except Exception as e:
         flash(f"Error al procesar la factura: {e}", "danger")
     finally:
