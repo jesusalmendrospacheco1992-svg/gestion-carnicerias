@@ -293,11 +293,11 @@ def index():
                 <div id="lineas-container">
                     <div class="row mb-2 linea-row align-items-center">
                         <div class="col-md-4">
-                            <input type="text" class="form-control form-control-sm mb-1 buscador-prod" placeholder="🔍 Buscar por código o nombre..." onkeyup="filtrarProductos(this)">
+                            <input type="text" class="form-control form-control-sm mb-1 buscador-prod" placeholder="🔍 Buscar producto por descripción..." onkeyup="filtrarProductos(this)">
                             <select name="producto[]" class="form-select prod-select" onchange="actualizarDatosProducto(this)" required>
                                 <option value="">Seleccione producto...</option>
                                 {% for p in productos %}
-                                <option value="{{ p[1] }}" data-codigo="{{ p[0] }}" data-precio="{{ p[2] }}" data-iva="{{ p[3] }}">{{ p[0] }} - {{ p[1] }} ({{ p[2] }}€)</option>
+                                <option value="{{ p[1] }}" data-precio="{{ p[2] }}" data-iva="{{ p[3] }}">{{ p[1] }} ({{ p[2] }}€)</option>
                                 {% endfor %}
                             </select>
                         </div>
@@ -349,8 +349,7 @@ def index():
         let opciones = select.options;
         for (let i = 1; i < opciones.length; i++) {
             let texto = opciones[i].text.toLowerCase();
-            let codigo = opciones[i].getAttribute('data-codigo').toLowerCase();
-            if (texto.includes(filtro) || codigo.includes(filtro)) {
+            if (texto.includes(filtro)) {
                 opciones[i].style.display = '';
             } else {
                 opciones[i].style.display = 'none';
@@ -423,8 +422,11 @@ def stock():
         <h2>📦 Control de Almacén y Productos</h2>
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modalCrearProducto">➕ Nuevo Producto</button>
     </div>
+    <div class="mb-3">
+        <input type="text" id="buscador-stock" class="form-control" placeholder="🔍 Buscar producto en almacén por descripción..." onkeyup="filtrarStock()">
+    </div>
     <div class="table-responsive">
-    <table class="table table-striped table-bordered align-middle">
+    <table class="table table-striped table-bordered align-middle" id="tabla-stock">
         <thead class="table-dark">
             <tr><th>Código</th><th>Descripción</th><th>Precio</th><th>IVA</th><th>Stock Ini.</th><th>Compras</th><th>Ventas</th><th>Disponible</th><th>Estado</th><th>Acciones</th></tr>
         </thead>
@@ -433,7 +435,7 @@ def stock():
             <tr>
                 <form action="/actualizar_producto/{{ d[0] }}" method="POST">
                     <td>{{ d[1] }}</td>
-                    <td>{{ d[2] }}</td>
+                    <td class="desc-producto">{{ d[2] }}</td>
                     <td><input type="number" step="0.01" name="precio" value="{{ d[3] }}" class="form-control form-control-sm" style="width: 80px;" required></td>
                     <td>{{ "%.0f"|format(d[4]*100) }}%</td>
                     <td><input type="number" name="stock_inicial" value="{{ d[5] }}" class="form-control form-control-sm" style="width: 70px;" required></td>
@@ -451,6 +453,21 @@ def stock():
         </tbody>
     </table>
     </div>
+
+    <script>
+    function filtrarStock() {
+        let filtro = document.getElementById('buscador-stock').value.toLowerCase();
+        let filas = document.querySelectorAll('#tabla-stock tbody tr');
+        filas.forEach(fila => {
+            let desc = fila.querySelector('.desc-producto').textContent.toLowerCase();
+            if (desc.includes(filtro)) {
+                fila.style.display = '';
+            } else {
+                fila.style.display = 'none';
+            }
+        });
+    }
+    </script>
 
     <div class="modal fade" id="modalCrearProducto" tabindex="-1">
       <div class="modal-dialog">
