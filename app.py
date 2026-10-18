@@ -71,6 +71,7 @@ def init_db():
             nombre TEXT UNIQUE NOT NULL,
             nif TEXT NOT NULL,
             tipo_cliente TEXT NOT NULL,
+            categoria_negocio TEXT DEFAULT 'carnicería',
             recargo TEXT NOT NULL,
             direccion TEXT NOT NULL
         );
@@ -103,6 +104,7 @@ def init_db():
             cantidad INTEGER NOT NULL,
             precio_venta REAL NOT NULL,
             subtotal REAL NOT NULL,
+            iva_linea REAL DEFAULT 0.0,
             recargo_equivalencia REAL NOT NULL,
             total REAL NOT NULL
         );
@@ -113,6 +115,19 @@ def init_db():
             categoria TEXT NOT NULL,
             importe REAL NOT NULL
         );
+    """)
+
+    # Migración de seguridad por si la tabla clientes ya existía sin la columna categoria_negocio
+    cursor.execute("""
+        DO $$ 
+        BEGIN 
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='clientes' and column_name='categoria_negocio') THEN
+                ALTER TABLE clientes ADD COLUMN categoria_negocio TEXT DEFAULT 'carnicería';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='ventas' and column_name='iva_linea') THEN
+                ALTER TABLE ventas ADD COLUMN iva_linea REAL DEFAULT 0.0;
+            END IF;
+        END $$;
     """)
 
     # Crear usuario predeterminado si no existe (admin / admin123)
@@ -233,9 +248,10 @@ def logout():
 def index():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT nombre FROM clientes")
-    clientes = [r[0] for r in cursor.fetchall()]
-    cursor.execute("SELECT codigo, descripcion, precio FROM productos")
+    cursor.execute("SELECT nombre, categoria_negocio FROM clientes ORDER BY nombre ASC")
+    clientes = cursor.fetchall()
+    
+    cursor.execute("SELECT codigo, descripcion, precio FROM productos ORDER BY descripcion ASC")
     productos = cursor.fetchall()
     
     cursor.execute("SELECT COUNT(*) FROM facturas")
@@ -254,11 +270,12 @@ def index():
             <form action="/procesar_factura" method="POST" class="card p-4 shadow-sm">
                 <div class="row mb-3">
                     <div class="col-md-6">
-                        <label class="form-label">Cliente / Carnicería</label>
-                        <select name="cliente" class="form-select" required>
+                        <label class="form-label">Cliente / Negocio</label>
+                        <input type="text" id="buscador-cliente" class="form-control mb-2" placeholder="🔍 Filtrar cliente por nombre..." onkeyup="filtrarClientes()">
+                        <select name="cliente" id="select-cliente" class="form-select" required>
                             <option value="">Seleccione un cliente...</option>
                             {% for c in clientes %}
-                            <option value="{{ c }}">{{ c }}</option>
+                            <option value="{{ c[0] }}">{{ c[0] }} ({{ c[1]|capitalize }})</option>
                             {% endfor %}
                         </select>
                     </div>
@@ -270,12 +287,13 @@ def index():
                 <hr>
                 <h5 class="mb-3">Añadir Líneas de Venta</h5>
                 <div id="lineas-container">
-                    <div class="row mb-2 linea-row">
+                    <div class="row mb-2 linea-row align-items-center">
                         <div class="col-md-5">
+                            <input type="text" class="form-control form-control-sm mb-1 buscador-prod" placeholder="🔍 Buscar por código o nombre..." onkeyup="filtrarProductos(this)">
                             <select name="producto[]" class="form-select prod-select" onchange="actualizarPrecio(this)" required>
                                 <option value="">Seleccione producto...</option>
                                 {% for p in productos %}
-                                <option value="{{ p[1] }}" data-precio="{{ p[2] }}">{{ p[0] }} - {{ p[1] }} ({{ p[2] }}€)</option>
+                                <option value="{{ p[1] }}" data-codigo="{{ p[0] }}" data-precio="{{ p[2] }}">{{ p[0] }} - {{ p[1] }} ({{ p[2] }}€)</option>
                                 {% endfor %}
                             </select>
                         </div>
@@ -284,6 +302,9 @@ def index():
                         </div>
                         <div class="col-md-3">
                             <input type="number" step="0.01" name="precio_unit[]" class="form-control precio-input" placeholder="Precio Unit. (€)" required>
+                        </div>
+                        <div class="col-md-1">
+                            <button type="button" class="btn btn-outline-danger btn-sm" onclick="eliminarLinea(this)">🗑️</button>
                         </div>
                     </div>
                 </div>
@@ -295,17 +316,60 @@ def index():
         </div>
     </div>
     <script>
+    function filtrarClientes() {
+        let filtro = document.getElementById('buscador-cliente').value.toLowerCase();
+        let select = document.getElementById('select-cliente');
+        let opciones = select.options;
+        for (let i = 1; i < opciones.length; i++) {
+            let texto = opciones[i].text.toLowerCase();
+            opciones[i].style.display = texto.includes(filtro) ? '' : 'none';
+        }
+    }
+
+    function filtrarProductos(input) {
+        let filtro = input.value.toLowerCase();
+        let row = input.closest('.linea-row');
+        let select = row.querySelector('.prod-select');
+        let opciones = select.options;
+        for (let i = 1; i < opciones.length; i++) {
+            let texto = opciones[i].text.toLowerCase();
+            let codigo = opciones[i].getAttribute('data-codigo').toLowerCase();
+            if (texto.includes(filtro) || codigo.includes(filtro)) {
+                opciones[i].style.display = '';
+            } else {
+                opciones[i].style.display = 'none';
+            }
+        }
+    }
+
     function actualizarPrecio(select) {
         let precio = select.options[select.selectedIndex].getAttribute('data-precio');
         let row = select.closest('.linea-row');
-        row.querySelector('.precio-input').value = precio;
+        if (precio) {
+            row.querySelector('.precio-input').value = precio;
+        }
     }
+
     function addLinea() {
         let container = document.getElementById('lineas-container');
         let primeraLinea = container.querySelector('.linea-row');
         let clone = primeraLinea.cloneNode(true);
-        clone.querySelector('input').value = '1';
+        clone.querySelector('.buscador-prod').value = '';
+        clone.querySelector('input[name="cantidad[]"]').value = '1';
+        clone.querySelector('.precio-input').value = '';
+        let select = clone.querySelector('.prod-select');
+        select.selectedIndex = 0;
+        for (let opt of select.options) { opt.style.display = ''; }
         container.appendChild(clone);
+    }
+
+    function eliminarLinea(btn) {
+        let container = document.getElementById('lineas-container');
+        if (container.querySelectorAll('.linea-row').length > 1) {
+            btn.closest('.linea-row').remove();
+        } else {
+            alert('Debe mantenerse al menos una línea de venta.');
+        }
     }
     </script>
     """)
@@ -317,7 +381,7 @@ def index():
 def stock():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, codigo, descripcion, precio, iva, stock_inicial, compras, stock_minimo FROM productos")
+    cursor.execute("SELECT id, codigo, descripcion, precio, iva, stock_inicial, compras, stock_minimo FROM productos ORDER BY descripcion ASC")
     rows = cursor.fetchall()
     
     datos = []
@@ -438,24 +502,29 @@ def eliminar_producto(id):
 def clientes():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, nombre, nif, tipo_cliente, recargo, direccion FROM clientes")
+    cursor.execute("SELECT id, nombre, nif, tipo_cliente, categoria_negocio, recargo, direccion FROM clientes ORDER BY nombre ASC")
     rows = cursor.fetchall()
     conn.close()
 
     html = BASE_LAYOUT.replace("{% block content %}{% endblock %}", """
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h2>👥 Clientes (Carnicerías)</h2>
+        <h2>👥 Clientes y Negocios</h2>
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modalCrearCliente">➕ Nuevo Cliente</button>
     </div>
     <div class="table-responsive">
     <table class="table table-striped table-bordered align-middle">
         <thead class="table-dark">
-            <tr><th>Nombre</th><th>NIF</th><th>Tipo</th><th>Recargo Equiv.</th><th>Dirección</th><th>Acciones</th></tr>
+            <tr><th>Nombre</th><th>NIF</th><th>Tipo</th><th>Categoría Negocio</th><th>Recargo Equiv.</th><th>Dirección</th><th>Acciones</th></tr>
         </thead>
         <tbody>
             {% for r in rows %}
             <tr>
-                <td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td><td>{{ r[4] }}</td><td>{{ r[5] }}</td>
+                <td>{{ r[1] }}</td>
+                <td>{{ r[2] }}</td>
+                <td>{{ r[3] }}</td>
+                <td><span class="badge bg-secondary">{{ r[4]|capitalize }}</span></td>
+                <td>{{ r[5] }}</td>
+                <td>{{ r[6] }}</td>
                 <td>
                     <button class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#modalEditarCliente{{ r[0] }}" title="Editar">✏️</button>
                     <a href="/eliminar_cliente/{{ r[0] }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar cliente?')" title="Eliminar">🗑️</a>
@@ -477,13 +546,21 @@ def clientes():
                             <option {% if r[3]=='Mayorista' %}selected{% endif %}>Mayorista</option>
                         </select>
                     </div>
-                    <div class="mb-2"><label>Aplica Recargo Equivalencia</label>
-                        <select name="recargo" class="form-select">
-                            <option value="SÍ" {% if r[4]=='SÍ' %}selected{% endif %}>SÍ</option>
-                            <option value="NO" {% if r[4]=='NO' %}selected{% endif %}>NO</option>
+                    <div class="mb-2"><label>Categoría del Negocio</label>
+                        <select name="categoria_negocio" class="form-select" required>
+                            <option value="carnicería" {% if r[4]=='carnicería' %}selected{% endif %}>Carnicería</option>
+                            <option value="restauración" {% if r[4]=='restauración' %}selected{% endif %}>Restauración</option>
+                            <option value="catering" {% if r[4]=='catering' %}selected{% endif %}>Catering</option>
+                            <option value="otro" {% if r[4]=='otro' %}selected{% endif %}>Otro</option>
                         </select>
                     </div>
-                    <div class="mb-2"><label>Dirección</label><input type="text" name="direccion" value="{{ r[5] }}" class="form-control" required></div>
+                    <div class="mb-2"><label>Aplica Recargo Equivalencia</label>
+                        <select name="recargo" class="form-select">
+                            <option value="SÍ" {% if r[5]=='SÍ' %}selected{% endif %}>SÍ</option>
+                            <option value="NO" {% if r[5]=='NO' %}selected{% endif %}>NO</option>
+                        </select>
+                    </div>
+                    <div class="mb-2"><label>Dirección</label><input type="text" name="direccion" value="{{ r[6] }}" class="form-control" required></div>
                   </div>
                   <div class="modal-footer"><button type="submit" class="btn btn-primary">Actualizar</button></div>
                 </form>
@@ -504,6 +581,14 @@ def clientes():
             <div class="mb-2"><label>Tipo de Cliente</label>
                 <select name="tipo_cliente" class="form-select">
                     <option>Estándar</option><option>VIP</option><option>Mayorista</option>
+                </select>
+            </div>
+            <div class="mb-2"><label>Categoría del Negocio</label>
+                <select name="categoria_negocio" class="form-select" required>
+                    <option value="carnicería">Carnicería</option>
+                    <option value="restauración">Restauración</option>
+                    <option value="catering">Catering</option>
+                    <option value="otro">Otro</option>
                 </select>
             </div>
             <div class="mb-2"><label>Aplica Recargo Equivalencia</label>
@@ -527,9 +612,9 @@ def guardar_cliente():
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            INSERT INTO clientes (nombre, nif, tipo_cliente, recargo, direccion)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (request.form["nombre"], request.form["nif"], request.form["tipo_cliente"], request.form["recargo"], request.form["direccion"]))
+            INSERT INTO clientes (nombre, nif, tipo_cliente, categoria_negocio, recargo, direccion)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (request.form["nombre"], request.form["nif"], request.form["tipo_cliente"], request.form["categoria_negocio"], request.form["recargo"], request.form["direccion"]))
         conn.commit()
         flash("Cliente registrado con éxito", "success")
     except Exception as e:
@@ -545,8 +630,8 @@ def actualizar_cliente(id):
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            UPDATE clientes SET nombre = %s, nif = %s, tipo_cliente = %s, recargo = %s, direccion = %s WHERE id = %s
-        """, (request.form["nombre"], request.form["nif"], request.form["tipo_cliente"], request.form["recargo"], request.form["direccion"], id))
+            UPDATE clientes SET nombre = %s, nif = %s, tipo_cliente = %s, categoria_negocio = %s, recargo = %s, direccion = %s WHERE id = %s
+        """, (request.form["nombre"], request.form["nif"], request.form["tipo_cliente"], request.form["categoria_negocio"], request.form["recargo"], request.form["direccion"], id))
         conn.commit()
         flash("Cliente actualizado correctamente", "success")
     except Exception as e:
@@ -572,7 +657,7 @@ def eliminar_cliente(id):
 def historico():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, num_factura, fecha, cliente, tipo_cliente, recargo, base_imponible, iva_total, recargo_total, total_factura FROM facturas")
+    cursor.execute("SELECT id, num_factura, fecha, cliente, tipo_cliente, recargo, base_imponible, iva_total, recargo_total, total_factura FROM facturas ORDER BY id DESC")
     rows = cursor.fetchall()
     conn.close()
 
@@ -605,7 +690,6 @@ def eliminar_factura(num_factura):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Borrar de facturas, ventas_lineas y ventas para mantener sincronización total
         cursor.execute("DELETE FROM facturas WHERE num_factura = %s", (num_factura,))
         cursor.execute("DELETE FROM ventas_lineas WHERE num_factura = %s", (num_factura,))
         cursor.execute("DELETE FROM ventas WHERE factura = %s", (num_factura,))
@@ -686,7 +770,7 @@ def descargar_pdf(num_factura):
 def ventas():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, fecha, factura, cliente, producto, cantidad, precio_venta, subtotal, total FROM ventas")
+    cursor.execute("SELECT id, fecha, factura, cliente, producto, cantidad, precio_venta, subtotal, iva_linea, total FROM ventas ORDER BY id DESC")
     rows = cursor.fetchall()
     conn.close()
 
@@ -695,12 +779,12 @@ def ventas():
     <div class="table-responsive">
     <table class="table table-striped table-bordered mt-3 align-middle">
         <thead class="table-dark">
-            <tr><th>Fecha</th><th>Factura</th><th>Cliente</th><th>Producto</th><th>Cant.</th><th>Precio Unit.</th><th>Subtotal</th><th>Total</th><th>Acciones</th></tr>
+            <tr><th>Fecha</th><th>Factura</th><th>Cliente</th><th>Producto</th><th>Cant.</th><th>Precio Unit.</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Acciones</th></tr>
         </thead>
         <tbody>
             {% for r in rows %}
             <tr>
-                <td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td><td>{{ r[4] }}</td><td>{{ r[5] }}</td><td>{{ "%.2f"|format(r[6]) }}€</td><td>{{ "%.2f"|format(r[7]) }}€</td><td><strong>{{ "%.2f"|format(r[8]) }}€</strong></td>
+                <td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td><td>{{ r[4] }}</td><td>{{ r[5] }}</td><td>{{ "%.2f"|format(r[6]) }}€</td><td>{{ "%.2f"|format(r[7]) }}€</td><td>{{ "%.2f"|format(r[8]) }}€</td><td><strong>{{ "%.2f"|format(r[9]) }}€</strong></td>
                 <td>
                     <a href="/eliminar_venta/{{ r[0] }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar este registro de venta?')" title="Eliminar">🗑️</a>
                 </td>
@@ -728,7 +812,7 @@ def eliminar_venta(id):
 def gastos():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, fecha, concepto, categoria, importe FROM gastos")
+    cursor.execute("SELECT id, fecha, concepto, categoria, importe FROM gastos ORDER BY fecha DESC")
     rows = cursor.fetchall()
     conn.close()
 
@@ -833,16 +917,23 @@ def balance():
     cursor.execute("SELECT SUM(subtotal) FROM ventas")
     res_v = cursor.fetchone()
     ventas = res_v[0] if res_v and res_v[0] else 0.0
+
+    cursor.execute("SELECT SUM(iva_linea) FROM ventas")
+    res_iva = cursor.fetchone()
+    iva_ventas = res_iva[0] if res_iva and res_iva[0] else 0.0
+
     cursor.execute("SELECT SUM(importe) FROM gastos")
     res_g = cursor.fetchone()
     gastos = res_g[0] if res_g and res_g[0] else 0.0
     conn.close()
+    
     neto = ventas - gastos
 
     html = BASE_LAYOUT.replace("{% block content %}{% endblock %}", f"""
     <h2>📈 Balance General de Resultados</h2>
     <div class="card p-4 shadow-sm mt-4">
         <h4 class="text-success">(+) Ventas Totales (Base Imponible): {ventas:.2f} €</h4>
+        <h4 class="text-info mt-3">(+) IVA Repercutido (Ventas): {iva_ventas:.2f} €</h4>
         <h4 class="text-danger mt-3">(-) Total Gastos Imputados: {gastos:.2f} €</h4>
         <hr>
         <h3 class="mt-3 {'text-success' if neto >= 0 else 'text-danger'}">(=) BALANCE NETO / BENEFICIO: {neto:.2f} €</h3>
@@ -899,13 +990,15 @@ def procesar_factura():
         for item in lineas_temp:
             desc, cant, precio, iva, sub = item
             cursor.execute("INSERT INTO ventas_lineas (num_factura, producto, cantidad, precio) VALUES (%s, %s, %s, %s)", (num_fac, desc, cant, precio))
+            
+            iva_linea_val = sub * iva
             rec_linea = (sub * 0.014) if iva == 0.10 and aplica_recargo == "SÍ" else ((sub * 0.052) if iva == 0.21 and aplica_recargo == "SÍ" else 0)
-            tot_linea = sub + (sub * iva) + rec_linea
+            tot_linea = sub + iva_linea_val + rec_linea
             
             cursor.execute("""
-                INSERT INTO ventas (fecha, factura, cliente, tipo_cliente, producto, cantidad, precio_venta, subtotal, recargo_equivalencia, total)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (fecha_hoy, num_fac, cliente, tipo_cliente, desc, cant, precio, sub, rec_linea, tot_linea))
+                INSERT INTO ventas (fecha, factura, cliente, tipo_cliente, producto, cantidad, precio_venta, subtotal, iva_linea, recargo_equivalencia, total)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (fecha_hoy, num_fac, cliente, tipo_cliente, desc, cant, precio, sub, iva_linea_val, rec_linea, tot_linea))
 
         conn.commit()
         flash("Factura emitida correctamente y stock actualizado", "success")
