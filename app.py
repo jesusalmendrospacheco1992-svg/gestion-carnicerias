@@ -61,6 +61,7 @@ def init_db():
             codigo TEXT UNIQUE NOT NULL,
             descripcion TEXT NOT NULL,
             precio REAL NOT NULL,
+            precio_compra REAL DEFAULT 0.0,
             iva REAL NOT NULL,
             stock_inicial INTEGER NOT NULL,
             compras INTEGER NOT NULL,
@@ -130,6 +131,9 @@ def init_db():
             END IF;
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='ventas_lineas' and column_name='iva') THEN
                 ALTER TABLE ventas_lineas ADD COLUMN iva REAL DEFAULT 0.10;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='productos' and column_name='precio_compra') THEN
+                ALTER TABLE productos ADD COLUMN precio_compra REAL DEFAULT 0.0;
             END IF;
         END $$;
     """)
@@ -274,14 +278,13 @@ def index():
             <form action="/procesar_factura" method="POST" class="card p-4 shadow-sm">
                 <div class="row mb-3">
                     <div class="col-md-6">
-                        <label class="form-label">Cliente / Negocio</label>
-                        <input type="text" id="buscador-cliente" class="form-control mb-2" placeholder="🔍 Filtrar cliente por nombre..." onkeyup="filtrarClientes()">
-                        <select name="cliente" id="select-cliente" class="form-select" required>
-                            <option value="">Seleccione un cliente...</option>
+                        <label class="form-label">Cliente / Negocio (Búsqueda inteligente)</label>
+                        <input list="lista-clientes" name="cliente" id="input-cliente" class="form-control" placeholder="🔍 Escribe para buscar cliente..." required>
+                        <datalist id="lista-clientes">
                             {% for c in clientes %}
                             <option value="{{ c[0] }}">{{ c[0] }} ({{ c[1]|capitalize }})</option>
                             {% endfor %}
-                        </select>
+                        </datalist>
                     </div>
                     <div class="col-md-6">
                         <label class="form-label">Nº Factura</label>
@@ -293,13 +296,13 @@ def index():
                 <div id="lineas-container">
                     <div class="row mb-2 linea-row align-items-center">
                         <div class="col-md-4">
-                            <input type="text" class="form-control form-control-sm mb-1 buscador-prod" placeholder="🔍 Buscar producto por descripción..." onkeyup="filtrarProductos(this)">
-                            <select name="producto[]" class="form-select prod-select" onchange="actualizarDatosProducto(this)" required>
-                                <option value="">Seleccione producto...</option>
+                            <label class="form-label small text-muted mb-0">Producto</label>
+                            <input list="lista-productos" name="producto[]" class="form-control form-control-sm prod-input" placeholder="🔍 Buscar producto..." onchange="actualizarDatosProducto(this)" required>
+                            <datalist id="lista-productos">
                                 {% for p in productos %}
-                                <option value="{{ p[1] }}" data-precio="{{ p[2] }}" data-iva="{{ p[3] }}">{{ p[1] }} ({{ p[2] }}€)</option>
+                                <option value="{{ p[1] }}" data-precio="{{ p[2] }}" data-iva="{{ p[3] }}">{{ p[1] }} - {{ p[2] }}€</option>
                                 {% endfor %}
-                            </select>
+                            </datalist>
                         </div>
                         <div class="col-md-2">
                             <label class="form-label small text-muted mb-0">Cantidad</label>
@@ -331,44 +334,25 @@ def index():
             </form>
         </div>
     </div>
+    
     <script>
-    function filtrarClientes() {
-        let filtro = document.getElementById('buscador-cliente').value.toLowerCase();
-        let select = document.getElementById('select-cliente');
-        let opciones = select.options;
-        for (let i = 1; i < opciones.length; i++) {
-            let texto = opciones[i].text.toLowerCase();
-            opciones[i].style.display = texto.includes(filtro) ? '' : 'none';
-        }
-    }
+    // Diccionario temporal con precios e ivas de productos para el autocompletado avanzado
+    const productosData = {
+        {% for p in productos %}
+        "{{ p[1] }}": { precio: "{{ p[2] }}", iva: "{{ p[3] }}" },
+        {% endfor %}
+    };
 
-    function filtrarProductos(input) {
-        let filtro = input.value.toLowerCase();
+    function actualizarDatosProducto(input) {
+        let valor = input.value;
         let row = input.closest('.linea-row');
-        let select = row.querySelector('.prod-select');
-        let opciones = select.options;
-        for (let i = 1; i < opciones.length; i++) {
-            let texto = opciones[i].text.toLowerCase();
-            if (texto.includes(filtro)) {
-                opciones[i].style.display = '';
-            } else {
-                opciones[i].style.display = 'none';
-            }
-        }
-    }
-
-    function actualizarDatosProducto(select) {
-        let option = select.options[select.selectedIndex];
-        let precio = option.getAttribute('data-precio');
-        let iva = option.getAttribute('data-iva');
-        let row = select.closest('.linea-row');
-        
-        if (precio) {
-            row.querySelector('.precio-input').value = precio;
-        }
-        if (iva !== null) {
+        if (productosData[valor]) {
+            let p = productosData[valor];
+            row.querySelector('.precio-input').value = p.precio;
             let ivaSelect = row.querySelector('.iva-select');
-            ivaSelect.value = parseFloat(iva).toFixed(2);
+            if (ivaSelect) {
+                ivaSelect.value = parseFloat(p.iva).toFixed(2);
+            }
         }
     }
 
@@ -376,12 +360,9 @@ def index():
         let container = document.getElementById('lineas-container');
         let primeraLinea = container.querySelector('.linea-row');
         let clone = primeraLinea.cloneNode(true);
-        clone.querySelector('.buscador-prod').value = '';
+        clone.querySelector('.prod-input').value = '';
         clone.querySelector('input[name="cantidad[]"]').value = '1';
         clone.querySelector('.precio-input').value = '';
-        let select = clone.querySelector('.prod-select');
-        select.selectedIndex = 0;
-        for (let opt of select.options) { opt.style.display = ''; }
         container.appendChild(clone);
     }
 
@@ -403,18 +384,23 @@ def index():
 def stock():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, codigo, descripcion, precio, iva, stock_inicial, compras, stock_minimo FROM productos ORDER BY descripcion ASC")
+    cursor.execute("SELECT id, codigo, descripcion, precio, precio_compra, iva, stock_inicial, compras, stock_minimo FROM productos ORDER BY descripcion ASC")
     rows = cursor.fetchall()
     
     datos = []
     for r in rows:
-        p_id, cod, desc, precio, iva, ini, comp, min_s = r
+        p_id, cod, desc, precio, p_compra, iva, ini, comp, min_s = r
         cursor.execute("SELECT SUM(cantidad) FROM ventas_lineas WHERE producto = %s", (desc,))
         res_v = cursor.fetchone()
         v = res_v[0] if res_v and res_v[0] else 0
         actual = ini + comp - v
         estado = "Reponer" if actual <= min_s else "OK"
-        datos.append((p_id, cod, desc, precio, iva, ini, comp, v, actual, estado))
+        
+        # Cálculo de márgenes
+        margen_bruto = precio - p_compra
+        porcentaje_margen = (margen_bruto / precio * 100) if precio > 0 else 0.0
+        
+        datos.append((p_id, cod, desc, precio, p_compra, iva, ini, comp, v, actual, estado, margen_bruto, porcentaje_margen))
     conn.close()
 
     html = BASE_LAYOUT.replace("{% block content %}{% endblock %}", """
@@ -428,21 +414,45 @@ def stock():
     <div class="table-responsive">
     <table class="table table-striped table-bordered align-middle" id="tabla-stock">
         <thead class="table-dark">
-            <tr><th>Código</th><th>Descripción</th><th>Precio</th><th>IVA</th><th>Stock Ini.</th><th>Compras</th><th>Ventas</th><th>Disponible</th><th>Estado</th><th>Acciones</th></tr>
+            <tr>
+                <th>Código</th>
+                <th>Descripción</th>
+                <th>P. Venta</th>
+                <th>P. Compra</th>
+                <th>Margen (€)</th>
+                <th>Margen (%)</th>
+                <th>IVA</th>
+                <th>Stock Ini.</th>
+                <th>Compras</th>
+                <th>Ventas</th>
+                <th>Disponible</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+            </tr>
         </thead>
         <tbody>
             {% for d in datos %}
             <tr>
                 <form action="/actualizar_producto/{{ d[0] }}" method="POST">
-                    <td>{{ d[1] }}</td>
-                    <td class="desc-producto">{{ d[2] }}</td>
+                    <td><input type="text" name="codigo" value="{{ d[1] }}" class="form-control form-control-sm" style="width: 90px;" required></td>
+                    <td><input type="text" name="descripcion" value="{{ d[2] }}" class="form-control form-control-sm desc-producto" style="width: 180px;" required></td>
                     <td><input type="number" step="0.01" name="precio" value="{{ d[3] }}" class="form-control form-control-sm" style="width: 80px;" required></td>
-                    <td>{{ "%.0f"|format(d[4]*100) }}%</td>
-                    <td><input type="number" name="stock_inicial" value="{{ d[5] }}" class="form-control form-control-sm" style="width: 70px;" required></td>
-                    <td><input type="number" name="compras" value="{{ d[6] }}" class="form-control form-control-sm" style="width: 70px;" required></td>
-                    <td>{{ d[7] }}</td>
-                    <td><strong>{{ d[8] }}</strong></td>
-                    <td><span class="badge {{ 'bg-danger' if d[9]=='Reponer' else 'bg-success' }}">{{ d[9] }}</span></td>
+                    <td><input type="number" step="0.01" name="precio_compra" value="{{ d[4] }}" class="form-control form-control-sm" style="width: 80px;" required></td>
+                    <td><span class="text-success fw-bold">{{ "%.2f"|format(d[11]) }}€</span></td>
+                    <td><span class="badge bg-info text-dark">{{ "%.1f"|format(d[12]) }}%</span></td>
+                    <td>
+                        <select name="iva" class="form-select form-select-sm" style="width: 85px;" required>
+                            <option value="0.10" {% if d[5]==0.10 %}selected{% endif %}>10%</option>
+                            <option value="0.21" {% if d[5]==0.21 %}selected{% endif %}>21%</option>
+                            <option value="0.04" {% if d[5]==0.04 %}selected{% endif %}>4%</option>
+                            <option value="0.00" {% if d[5]==0.00 %}selected{% endif %}>0%</option>
+                        </select>
+                    </td>
+                    <td><input type="number" name="stock_inicial" value="{{ d[6] }}" class="form-control form-control-sm" style="width: 65px;" required></td>
+                    <td><input type="number" name="compras" value="{{ d[7] }}" class="form-control form-control-sm" style="width: 65px;" required></td>
+                    <td>{{ d[8] }}</td>
+                    <td><strong>{{ d[9] }}</strong></td>
+                    <td><span class="badge {{ 'bg-danger' if d[10]=='Reponer' else 'bg-success' }}">{{ d[10] }}</span></td>
                     <td>
                         <button type="submit" class="btn btn-success btn-sm" title="Guardar cambios">💾</button>
                         <a href="/eliminar_producto/{{ d[0] }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar producto?')" title="Eliminar">🗑️</a>
@@ -459,11 +469,10 @@ def stock():
         let filtro = document.getElementById('buscador-stock').value.toLowerCase();
         let filas = document.querySelectorAll('#tabla-stock tbody tr');
         filas.forEach(fila => {
-            let desc = fila.querySelector('.desc-producto').textContent.toLowerCase();
-            if (desc.includes(filtro)) {
-                fila.style.display = '';
-            } else {
-                fila.style.display = 'none';
+            let inputDesc = fila.querySelector('.desc-producto');
+            if (inputDesc) {
+                let desc = inputDesc.value.toLowerCase();
+                fila.style.display = desc.includes(filtro) ? '' : 'none';
             }
         });
     }
@@ -476,8 +485,16 @@ def stock():
           <div class="modal-body">
             <div class="mb-2"><label>Código</label><input type="text" name="codigo" class="form-control" required></div>
             <div class="mb-2"><label>Descripción</label><input type="text" name="descripcion" class="form-control" required></div>
-            <div class="mb-2"><label>Precio (€)</label><input type="number" step="0.01" name="precio" class="form-control" required></div>
-            <div class="mb-2"><label>IVA (0.10 para 10%, 0.21 para 21%)</label><input type="number" step="0.01" name="iva" class="form-control" value="0.10" required></div>
+            <div class="mb-2"><label>Precio Venta (€)</label><input type="number" step="0.01" name="precio" class="form-control" required></div>
+            <div class="mb-2"><label>Precio Compra (€)</label><input type="number" step="0.01" name="precio_compra" class="form-control" value="0.00" required></div>
+            <div class="mb-2"><label>IVA</label>
+                <select name="iva" class="form-select" required>
+                    <option value="0.10">10% (Reducido)</option>
+                    <option value="0.21">21% (General)</option>
+                    <option value="0.04">4% (Superreducido)</option>
+                    <option value="0.00">0% (Exento)</option>
+                </select>
+            </div>
             <div class="mb-2"><label>Stock Inicial</label><input type="number" name="stock_inicial" class="form-control" value="0" required></div>
             <div class="mb-2"><label>Compras</label><input type="number" name="compras" class="form-control" value="0" required></div>
             <div class="mb-2"><label>Stock Mínimo</label><input type="number" name="stock_minimo" class="form-control" value="10" required></div>
@@ -496,9 +513,9 @@ def guardar_producto():
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            INSERT INTO productos (codigo, descripcion, precio, iva, stock_inicial, compras, stock_minimo)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (request.form["codigo"], request.form["descripcion"], float(request.form["precio"]), float(request.form["iva"]),
+            INSERT INTO productos (codigo, descripcion, precio, precio_compra, iva, stock_inicial, compras, stock_minimo)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (request.form["codigo"], request.form["descripcion"], float(request.form["precio"]), float(request.form["precio_compra"]), float(request.form["iva"]),
               int(request.form["stock_inicial"]), int(request.form["compras"]), 10))
         conn.commit()
         flash("Producto guardado correctamente", "success")
@@ -515,8 +532,8 @@ def actualizar_producto(id):
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            UPDATE productos SET precio = %s, stock_inicial = %s, compras = %s WHERE id = %s
-        """, (float(request.form["precio"]), int(request.form["stock_inicial"]), int(request.form["compras"]), id))
+            UPDATE productos SET codigo = %s, descripcion = %s, precio = %s, precio_compra = %s, iva = %s, stock_inicial = %s, compras = %s WHERE id = %s
+        """, (request.form["codigo"], request.form["descripcion"], float(request.form["precio"]), float(request.form["precio_compra"]), float(request.form["iva"]), int(request.form["stock_inicial"]), int(request.form["compras"]), id))
         conn.commit()
         flash("Producto actualizado correctamente", "success")
     except Exception as e:
