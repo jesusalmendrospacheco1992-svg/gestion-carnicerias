@@ -400,7 +400,6 @@ def stock():
         actual = ini + comp - v
         estado = "Reponer" if actual <= min_s else "OK"
         
-        # Cálculo de márgenes
         margen_bruto = precio - p_compra
         porcentaje_margen = (margen_bruto / precio * 100) if precio > 0 else 0.0
         
@@ -518,7 +517,7 @@ def stock():
     """)
     return render_template_string(html, datos=datos)
 
-# --- RUTA PARA IMPORTAR AUTOMÁTICAMENTE EL EXCEL ---
+# --- IMPORTAR EXCEL ---
 @app.route("/importar_excel")
 @login_required
 def importar_excel():
@@ -539,23 +538,19 @@ def importar_excel():
             proveedor = str(row['PROVEEDOR']).strip() if pd.notna(row['PROVEEDOR']) else 'PILARICA'
             precio_compra = float(row['Precio COMPRA']) if pd.notna(row['Precio COMPRA']) else 0.0
             
-            # Si en el Excel hay precio de venta se usa, si no, se calcula por defecto (ej. 1.35 x coste) o se pone 0.0
             if pd.notna(row['Precio venta']):
                 precio_venta = float(row['Precio venta'])
             else:
                 precio_venta = round(precio_compra * 1.35, 2) if precio_compra > 0 else 10.0
             
-            # Comprobar si ya existe el producto por código
             cursor.execute("SELECT id FROM productos WHERE codigo = %s", (codigo,))
             existe = cursor.fetchone()
             
             if existe:
-                # Actualizar precio de compra y proveedor si ya existe
                 cursor.execute("""
                     UPDATE productos SET precio_compra = %s, proveedor = %s WHERE codigo = %s
                 """, (precio_compra, proveedor, codigo))
             else:
-                # Insertar nuevo producto
                 cursor.execute("""
                     INSERT INTO productos (codigo, descripcion, proveedor, precio, precio_compra, iva, stock_inicial, compras, stock_minimo)
                     VALUES (%s, %s, %s, %s, %s, 0.10, 50, 0, 10)
@@ -655,7 +650,6 @@ def clientes():
                 </td>
             </tr>
 
-            <!-- Modal Editar Cliente -->
             <div class="modal fade" id="modalEditarCliente{{ r[0] }}" tabindex="-1">
               <div class="modal-dialog">
                 <form action="/actualizar_cliente/{{ r[0] }}" method="POST" class="modal-content">
@@ -968,7 +962,6 @@ def gastos():
                 </td>
             </tr>
 
-            <!-- Modal Editar Gasto -->
             <div class="modal fade" id="modalEditarGasto{{ r[0] }}" tabindex="-1">
               <div class="modal-dialog">
                 <form action="/actualizar_gasto/{{ r[0] }}" method="POST" class="modal-content">
