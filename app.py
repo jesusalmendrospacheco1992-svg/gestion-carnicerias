@@ -1,6 +1,7 @@
 import os
 import datetime
 from io import BytesIO
+import pandas as pd
 from flask import Flask, render_template_string, request, redirect, url_for, flash, send_file
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -16,7 +17,7 @@ from reportlab.lib import colors
 app = Flask(__name__)
 app.secret_key = "clave_secreta_para_sesiones_seguras"
 
-# Cadena de conexión actualizada a Supabase usando el pooler / puerto de conexión directa
+# Cadena de conexión a Supabase
 SUPABASE_DB_URL = "postgresql://postgres.ocfpyiecmsgngurquphs:63Aa49Jemarta9$@aws-0-eu-west-2.pooler.supabase.com:6543/postgres"
 
 def get_db_connection():
@@ -60,6 +61,7 @@ def init_db():
             id SERIAL PRIMARY KEY,
             codigo TEXT UNIQUE NOT NULL,
             descripcion TEXT NOT NULL,
+            proveedor TEXT DEFAULT 'Plastipapel',
             precio REAL NOT NULL,
             precio_compra REAL DEFAULT 0.0,
             iva REAL NOT NULL,
@@ -134,6 +136,9 @@ def init_db():
             END IF;
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='productos' and column_name='precio_compra') THEN
                 ALTER TABLE productos ADD COLUMN precio_compra REAL DEFAULT 0.0;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='productos' and column_name='proveedor') THEN
+                ALTER TABLE productos ADD COLUMN proveedor TEXT DEFAULT 'Plastipapel';
             END IF;
         END $$;
     """)
@@ -336,7 +341,6 @@ def index():
     </div>
     
     <script>
-    // Diccionario temporal con precios e ivas de productos para el autocompletado avanzado
     const productosData = {
         {% for p in productos %}
         "{{ p[1] }}": { precio: "{{ p[2] }}", iva: "{{ p[3] }}" },
@@ -384,12 +388,12 @@ def index():
 def stock():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, codigo, descripcion, precio, precio_compra, iva, stock_inicial, compras, stock_minimo FROM productos ORDER BY descripcion ASC")
+    cursor.execute("SELECT id, codigo, descripcion, proveedor, precio, precio_compra, iva, stock_inicial, compras, stock_minimo FROM productos ORDER BY descripcion ASC")
     rows = cursor.fetchall()
     
     datos = []
     for r in rows:
-        p_id, cod, desc, precio, p_compra, iva, ini, comp, min_s = r
+        p_id, cod, desc, proveedor, precio, p_compra, iva, ini, comp, min_s = r
         cursor.execute("SELECT SUM(cantidad) FROM ventas_lineas WHERE producto = %s", (desc,))
         res_v = cursor.fetchone()
         v = res_v[0] if res_v and res_v[0] else 0
@@ -400,16 +404,19 @@ def stock():
         margen_bruto = precio - p_compra
         porcentaje_margen = (margen_bruto / precio * 100) if precio > 0 else 0.0
         
-        datos.append((p_id, cod, desc, precio, p_compra, iva, ini, comp, v, actual, estado, margen_bruto, porcentaje_margen))
+        datos.append((p_id, cod, desc, proveedor, precio, p_compra, iva, ini, comp, v, actual, estado, margen_bruto, porcentaje_margen))
     conn.close()
 
     html = BASE_LAYOUT.replace("{% block content %}{% endblock %}", """
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h2>📦 Control de Almacén y Productos</h2>
-        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modalCrearProducto">➕ Nuevo Producto</button>
+        <div>
+            <a href="/importar_excel" class="btn btn-warning me-2">📥 Cargar Excel Productos (Pilarica)</a>
+            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modalCrearProducto">➕ Nuevo Producto</button>
+        </div>
     </div>
     <div class="mb-3">
-        <input type="text" id="buscador-stock" class="form-control" placeholder="🔍 Buscar producto en almacén por descripción..." onkeyup="filtrarStock()">
+        <input type="text" id="buscador-stock" class="form-control" placeholder="🔍 Buscar producto en almacén por descripción o proveedor..." onkeyup="filtrarStock()">
     </div>
     <div class="table-responsive">
     <table class="table table-striped table-bordered align-middle" id="tabla-stock">
@@ -417,6 +424,7 @@ def stock():
             <tr>
                 <th>Código</th>
                 <th>Descripción</th>
+                <th>Proveedor</th>
                 <th>P. Venta</th>
                 <th>P. Compra</th>
                 <th>Margen (€)</th>
@@ -434,25 +442,26 @@ def stock():
             {% for d in datos %}
             <tr>
                 <form action="/actualizar_producto/{{ d[0] }}" method="POST">
-                    <td><input type="text" name="codigo" value="{{ d[1] }}" class="form-control form-control-sm" style="width: 90px;" required></td>
-                    <td><input type="text" name="descripcion" value="{{ d[2] }}" class="form-control form-control-sm desc-producto" style="width: 180px;" required></td>
-                    <td><input type="number" step="0.01" name="precio" value="{{ d[3] }}" class="form-control form-control-sm" style="width: 80px;" required></td>
-                    <td><input type="number" step="0.01" name="precio_compra" value="{{ d[4] }}" class="form-control form-control-sm" style="width: 80px;" required></td>
-                    <td><span class="text-success fw-bold">{{ "%.2f"|format(d[11]) }}€</span></td>
-                    <td><span class="badge bg-info text-dark">{{ "%.1f"|format(d[12]) }}%</span></td>
+                    <td><input type="text" name="codigo" value="{{ d[1] }}" class="form-control form-control-sm" style="width: 80px;" required></td>
+                    <td><input type="text" name="descripcion" value="{{ d[2] }}" class="form-control form-control-sm desc-producto" style="width: 160px;" required></td>
+                    <td><input type="text" name="proveedor" value="{{ d[3] if d[3] else 'Plastipapel' }}" class="form-control form-control-sm prov-producto" style="width: 120px;" required></td>
+                    <td><input type="number" step="0.01" name="precio" value="{{ d[4] }}" class="form-control form-control-sm" style="width: 75px;" required></td>
+                    <td><input type="number" step="0.01" name="precio_compra" value="{{ d[5] }}" class="form-control form-control-sm" style="width: 75px;" required></td>
+                    <td><span class="text-success fw-bold">{{ "%.2f"|format(d[12]) }}€</span></td>
+                    <td><span class="badge bg-info text-dark">{{ "%.1f"|format(d[13]) }}%</span></td>
                     <td>
-                        <select name="iva" class="form-select form-select-sm" style="width: 85px;" required>
-                            <option value="0.10" {% if d[5]==0.10 %}selected{% endif %}>10%</option>
-                            <option value="0.21" {% if d[5]==0.21 %}selected{% endif %}>21%</option>
-                            <option value="0.04" {% if d[5]==0.04 %}selected{% endif %}>4%</option>
-                            <option value="0.00" {% if d[5]==0.00 %}selected{% endif %}>0%</option>
+                        <select name="iva" class="form-select form-select-sm" style="width: 80px;" required>
+                            <option value="0.10" {% if d[6]==0.10 %}selected{% endif %}>10%</option>
+                            <option value="0.21" {% if d[6]==0.21 %}selected{% endif %}>21%</option>
+                            <option value="0.04" {% if d[6]==0.04 %}selected{% endif %}>4%</option>
+                            <option value="0.00" {% if d[6]==0.00 %}selected{% endif %}>0%</option>
                         </select>
                     </td>
-                    <td><input type="number" name="stock_inicial" value="{{ d[6] }}" class="form-control form-control-sm" style="width: 65px;" required></td>
-                    <td><input type="number" name="compras" value="{{ d[7] }}" class="form-control form-control-sm" style="width: 65px;" required></td>
-                    <td>{{ d[8] }}</td>
-                    <td><strong>{{ d[9] }}</strong></td>
-                    <td><span class="badge {{ 'bg-danger' if d[10]=='Reponer' else 'bg-success' }}">{{ d[10] }}</span></td>
+                    <td><input type="number" name="stock_inicial" value="{{ d[7] }}" class="form-control form-control-sm" style="width: 60px;" required></td>
+                    <td><input type="number" name="compras" value="{{ d[8] }}" class="form-control form-control-sm" style="width: 60px;" required></td>
+                    <td>{{ d[9] }}</td>
+                    <td><strong>{{ d[10] }}</strong></td>
+                    <td><span class="badge {{ 'bg-danger' if d[11]=='Reponer' else 'bg-success' }}">{{ d[11] }}</span></td>
                     <td>
                         <button type="submit" class="btn btn-success btn-sm" title="Guardar cambios">💾</button>
                         <a href="/eliminar_producto/{{ d[0] }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar producto?')" title="Eliminar">🗑️</a>
@@ -470,9 +479,11 @@ def stock():
         let filas = document.querySelectorAll('#tabla-stock tbody tr');
         filas.forEach(fila => {
             let inputDesc = fila.querySelector('.desc-producto');
-            if (inputDesc) {
+            let inputProv = fila.querySelector('.prov-producto');
+            if (inputDesc && inputProv) {
                 let desc = inputDesc.value.toLowerCase();
-                fila.style.display = desc.includes(filtro) ? '' : 'none';
+                let prov = inputProv.value.toLowerCase();
+                fila.style.display = (desc.includes(filtro) || prov.includes(filtro)) ? '' : 'none';
             }
         });
     }
@@ -485,6 +496,7 @@ def stock():
           <div class="modal-body">
             <div class="mb-2"><label>Código</label><input type="text" name="codigo" class="form-control" required></div>
             <div class="mb-2"><label>Descripción</label><input type="text" name="descripcion" class="form-control" required></div>
+            <div class="mb-2"><label>Proveedor</label><input type="text" name="proveedor" class="form-control" value="Plastipapel" required></div>
             <div class="mb-2"><label>Precio Venta (€)</label><input type="number" step="0.01" name="precio" class="form-control" required></div>
             <div class="mb-2"><label>Precio Compra (€)</label><input type="number" step="0.01" name="precio_compra" class="form-control" value="0.00" required></div>
             <div class="mb-2"><label>IVA</label>
@@ -506,6 +518,58 @@ def stock():
     """)
     return render_template_string(html, datos=datos)
 
+# --- RUTA PARA IMPORTAR AUTOMÁTICAMENTE EL EXCEL ---
+@app.route("/importar_excel")
+@login_required
+def importar_excel():
+    excel_path = 'PRODUCTOS LISTADO.xlsx'
+    if not os.path.exists(excel_path):
+        flash("No se encontró el archivo 'PRODUCTOS LISTADO.xlsx' en el servidor.", "danger")
+        return redirect(url_for("stock"))
+    
+    try:
+        df = pd.read_excel(excel_path)
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        importados = 0
+        for _, row in df.iterrows():
+            codigo = str(row['Producto']).strip()
+            descripcion = str(row['Descripción']).strip()
+            proveedor = str(row['PROVEEDOR']).strip() if pd.notna(row['PROVEEDOR']) else 'PILARICA'
+            precio_compra = float(row['Precio COMPRA']) if pd.notna(row['Precio COMPRA']) else 0.0
+            
+            # Si en el Excel hay precio de venta se usa, si no, se calcula por defecto (ej. 1.35 x coste) o se pone 0.0
+            if pd.notna(row['Precio venta']):
+                precio_venta = float(row['Precio venta'])
+            else:
+                precio_venta = round(precio_compra * 1.35, 2) if precio_compra > 0 else 10.0
+            
+            # Comprobar si ya existe el producto por código
+            cursor.execute("SELECT id FROM productos WHERE codigo = %s", (codigo,))
+            existe = cursor.fetchone()
+            
+            if existe:
+                # Actualizar precio de compra y proveedor si ya existe
+                cursor.execute("""
+                    UPDATE productos SET precio_compra = %s, proveedor = %s WHERE codigo = %s
+                """, (precio_compra, proveedor, codigo))
+            else:
+                # Insertar nuevo producto
+                cursor.execute("""
+                    INSERT INTO productos (codigo, descripcion, proveedor, precio, precio_compra, iva, stock_inicial, compras, stock_minimo)
+                    VALUES (%s, %s, %s, %s, %s, 0.10, 50, 0, 10)
+                """, (codigo, descripcion, proveedor, precio_venta, precio_compra))
+            importados += 1
+            
+        conn.commit()
+        conn.close()
+        flash(f"¡Se han importado/actualizado {importados} productos desde el Excel correctamente!", "success")
+    except Exception as e:
+        flash(f"Error al importar el Excel: {e}", "danger")
+        
+    return redirect(url_for("stock"))
+
 @app.route("/guardar_producto", methods=["POST"])
 @login_required
 def guardar_producto():
@@ -513,9 +577,10 @@ def guardar_producto():
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            INSERT INTO productos (codigo, descripcion, precio, precio_compra, iva, stock_inicial, compras, stock_minimo)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (request.form["codigo"], request.form["descripcion"], float(request.form["precio"]), float(request.form["precio_compra"]), float(request.form["iva"]),
+            INSERT INTO productos (codigo, descripcion, proveedor, precio, precio_compra, iva, stock_inicial, compras, stock_minimo)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (request.form["codigo"], request.form["descripcion"], request.form.get("proveedor", "Plastipapel"), 
+              float(request.form["precio"]), float(request.form["precio_compra"]), float(request.form["iva"]),
               int(request.form["stock_inicial"]), int(request.form["compras"]), 10))
         conn.commit()
         flash("Producto guardado correctamente", "success")
@@ -532,8 +597,10 @@ def actualizar_producto(id):
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            UPDATE productos SET codigo = %s, descripcion = %s, precio = %s, precio_compra = %s, iva = %s, stock_inicial = %s, compras = %s WHERE id = %s
-        """, (request.form["codigo"], request.form["descripcion"], float(request.form["precio"]), float(request.form["precio_compra"]), float(request.form["iva"]), int(request.form["stock_inicial"]), int(request.form["compras"]), id))
+            UPDATE productos SET codigo = %s, descripcion = %s, proveedor = %s, precio = %s, precio_compra = %s, iva = %s, stock_inicial = %s, compras = %s WHERE id = %s
+        """, (request.form["codigo"], request.form["descripcion"], request.form.get("proveedor", "Plastipapel"), 
+              float(request.form["precio"]), float(request.form["precio_compra"]), float(request.form["iva"]), 
+              int(request.form["stock_inicial"]), int(request.form["compras"]), id))
         conn.commit()
         flash("Producto actualizado correctamente", "success")
     except Exception as e:
@@ -783,7 +850,6 @@ def descargar_pdf(num_factura):
     styles = getSampleStyleSheet()
     story = []
 
-    # Cabecera Emisor
     story.append(Paragraph("<b>PRODUCTOS ALMENDROS</b>", styles['Heading1']))
     story.append(Paragraph("NIF: 03808927N", styles['Normal']))
     story.append(Paragraph("Calle Los Ángeles, 37, 45860 Toledo", styles['Normal']))
@@ -1030,7 +1096,6 @@ def procesar_factura():
         sub = cant * precio
         iva_linea_val = sub * iva
         
-        # Recargo de equivalencia estándar (1.4% para IVA 10%, 5.2% para IVA 21%)
         rec_linea = 0
         if aplica_recargo == "SÍ":
             if abs(iva - 0.10) < 0.01:
