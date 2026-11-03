@@ -1,5 +1,7 @@
 flask
 flask-login
+werkzeug
 psycopg2-binary
 reportlab
-werkzeug
+pandas
+openpyxl
